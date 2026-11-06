@@ -749,6 +749,8 @@ void GraphicsPipeline::ConfigureBufferHalf(bool is_indexed, BufferJob& job) {
     // EDEN_NX2_PARALLEL_DRAW, DrawWorker thread. The back holds buffer_cache.mutex for the whole
     // Configure and touches only the texture cache during the split, so this thread is the buffer
     // cache's sole user. Records (uploads, geometry binds) are deferred for the back to replay.
+    const u64 work_start =
+        VideoCommon::Nx2FastProfile::Enabled() ? VideoCommon::Nx2Profile::Ticks() : 0;
     DeferredRecordStorage().clear();
     t_deferred_record_target = &DeferredRecordStorage();
 
@@ -788,6 +790,9 @@ void GraphicsPipeline::ConfigureBufferHalf(bool is_indexed, BufferJob& job) {
     t_deferred_record_target = nullptr;
     job.uploaded = buffer_cache.any_buffer_uploaded;
     buffer_cache.any_buffer_uploaded = false;
+    if (work_start != 0) {
+        VideoCommon::Nx2FastProfile::Worker(work_start);
+    }
 }
 
 template <typename Spec>

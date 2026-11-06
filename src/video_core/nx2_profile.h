@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #ifdef _MSC_VER
 #include <intrin.h>
 #elif defined(ARCHITECTURE_x86_64)
@@ -344,6 +345,18 @@ struct Data {
 
 inline thread_local Data t_data;
 
+// EDEN_NX2_PARALLEL_DRAW: DrawWorker's own CPU per job (the back waits for it).
+inline std::atomic<u64> g_worker_ticks{0};
+inline std::atomic<u64> g_worker_jobs{0};
+
+inline void Worker(u64 start_ticks) {
+    if (!g_enabled) {
+        return;
+    }
+    g_worker_ticks.fetch_add(Nx2Profile::Ticks() - start_ticks, std::memory_order_relaxed);
+    g_worker_jobs.fetch_add(1, std::memory_order_relaxed);
+}
+
 inline void Method(u64 start_ticks) {
     if (!g_enabled) {
         return;
@@ -411,6 +424,8 @@ inline void Report(const char* thread_name) {
         return;
     }
     const u64 window_ticks = (std::max<u64>)(now_ticks - data.window_start_ticks, 1);
+    const u64 worker_ticks = g_worker_ticks.exchange(0, std::memory_order_relaxed);
+    const u64 worker_jobs = g_worker_jobs.exchange(0, std::memory_order_relaxed);
     const double ns_per_tick = static_cast<double>(window_ns) / static_cast<double>(window_ticks);
     const auto per_second = [window_ns](u64 count) {
         return static_cast<double>(count) * 1e9 / static_cast<double>(window_ns);
@@ -425,6 +440,7 @@ inline void Report(const char* thread_name) {
     LOG_INFO(HW_GPU, "{} fast path per second: {:.0f} methods ({:.1f} ms, {:.1f} ns/method) | "
                      "{:.0f} draws ({:.1f} ms, {:.1f} ns/draw) | "
                      "{:.0f} waits ({:.1f} ms, {:.1f} us/wait) | "
+                     "{:.0f} worker jobs ({:.1f} ms, {:.1f} us/job) | "
                      "{:.0f} multi ({:.1f} ms, {:.1f} ns/word) | {:.0f} direct, {:.0f} sunk, "
                      "{:.0f} executed ({:.1f}% sunk)",
              thread_name, per_second(data.methods), ms(data.method_ticks),
@@ -433,6 +449,10 @@ inline void Report(const char* thread_name) {
              ms(data.wait_ticks),
              data.waits != 0 ? static_cast<double>(data.wait_ticks) / data.waits * ns_per_tick / 1000.0
                              : 0.0,
+             per_second(worker_jobs), ms(worker_ticks),
+             worker_jobs != 0
+                 ? static_cast<double>(worker_ticks) / worker_jobs * ns_per_tick / 1000.0
+                 : 0.0,
              per_second(data.multis), ms(data.multi_ticks),
              ns_each(data.multi_ticks, data.multis), per_second(data.direct),
              per_second(data.sunk), per_second(data.executed),

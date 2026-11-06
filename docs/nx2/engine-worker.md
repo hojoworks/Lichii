@@ -325,23 +325,30 @@ replays both after the join. It renders correctly.
 
 | Variant | FPS (Low+split, no profiler) |
 |---|---|
-| serial baseline | 58.4 |
+| serial baseline | 58.4 (later run of the same scene: 52.5) |
 | parallel, mutex/condvar handoff | 13.8 |
 | parallel, spin handoff | 46.9 |
 | parallel, spin + fast profile | 44.2 |
+| parallel, spin, stable order | 51.3 |
 
-The spin handoff removed most of the 4x regression, but the split is still
-slower. Fast-path timing per draw:
+Starting the worker **before** the texture half (to force overlap) crashed with an
+access violation (`0x130` read) inside a driver module while the intro was
+decoding. The reorder was reverted; the stable order runs. The crash means the
+worker and the back must not touch the Vulkan descriptor/staging state in that
+window without a stronger contract.
 
-- back waits for the worker: **2.8 µs** (213 ms/s of the back)
-- worker's buffer half: **~5.8 µs**
+Fast-path timing per draw (stable order):
+
+- back waits for the worker: **2.9 µs** (215 ms/s of the back)
+- worker's CPU: **2.5 µs/job** (181 ms/s)
 - back's own half: **~3 µs**
-- serial draw: 5.8 µs
+- serial draw: 5.8-6.0 µs
 
-The two halves do not overlap: the worker is the long pole and runs cold
-(its cache structures compete with the back's texture work), so the critical
-path is the worker plus the handoff, not the maximum of the two. The per-draw
-handoff is too fine-grained for this work.
+The worker is not slow; the problem is ordering. In the stable order the back
+completes its whole texture half before starting the worker, so there is
+nothing to overlap and the wait is the worker's entire job. Starting it earlier
+overlaps but races the driver state.
+
 
 Also checked: `VK_EXT_external_memory_host` is **not supported** by the device
 (`vulkan_device.cpp:1190`), so mapping guest memory directly into Vulkan
@@ -349,22 +356,38 @@ buffers (zero-copy uniforms) is not available here.
 
 ### What this means
 
-The draw cost is genuine per-object data-plane work, and a fine-grained split
-cannot hide it. The remaining parallel option is **coarse batching**: resolve a
-run of draws (8-16) per handoff, not one. That needs a genuine deferred draw
-queue in the rasterizer, with the ordering constraints made explicit:
+The draw cost is genuine per-object data-plane work. The remaining parallel
+option is a **one-batch pipeline** that overlaps a whole batch instead of a
+single draw:
 
-- only batch draws to the same render target with the same pipeline and no
-  storage-buffer writes, so the two cache domains cannot depend on each other
-  inside the batch;
-- keep the descriptor queue per draw (`Acquire`/append/`ConfigureDraw` in order)
-  after the batch resolves;
-- flush the batch at any state boundary the existing draw deferral already
-  honours (clear, dispatch, render-target change, fence, frame end).
+1. Back: resolve the texture half for draws 0..K-1 of batch B (same render
+   target, same pipeline, no storage writes), buffer the pending draws.
+2. Back: submit one worker job for all K buffer halves of batch B.
+3. Back: while that job runs, record batch B-1 from its stored captures,
+   descriptor entries and draw functions.
+4. Next batch: join B, start C, record B.
 
-That is the next real milestone. The cheap alternatives are exhausted:
-command replay (0 % whole-frame repeat), identical-draw batching (0.1 %),
-copy-engine worker (noise), fine-grained draw split (measured slower).
+This keeps the cache order (texture before buffer per batch) and never lets the
+worker and back touch the same Vulkan state concurrently, so it avoids the
+crash above. Expected: back does texture (K x 1.5 us) plus record (K x 2 us)
+while the worker does buffer (K x 2.5 us); the draw stage drops from ~6 us to
+~3.5 us per draw, roughly +15-20 % fps.
+
+It requires a genuine deferred-draw queue in the rasterizer: pending draws,
+stored `draw_func`, per-draw descriptor `Acquire` at record time, and flushes at
+every state boundary (clear, dispatch, target change, fence, frame end).
+
+### The GPU-bound question
+
+The host GPU is at ~20 % because the CPU is translating ~1,500 draws/frame.
+The batch above is still CPU work, just overlapped. Becoming GPU-bound needs a
+different design: GPU-driven draws (`VK_EXT_multi_draw` plus a per-draw
+parameter buffer, and `gl_DrawID`-indexed constants/descriptors so a whole run
+is one Vulkan command). That is a shader-translation and descriptor-model
+project, not a threading one. The batch pipeline is the right next step and
+makes that project easier, because it introduces the deferred draw packet the
+GPU-driven path needs.
+
 
 
 
