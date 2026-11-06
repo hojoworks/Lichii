@@ -15,6 +15,7 @@
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "video_core/vulkan_common/vma_lock.h"
 
 namespace Vulkan::vk {
 
@@ -522,12 +523,14 @@ void Image::SetObjectNameEXT(const char* name) const {
 }
 
 void Image::Release() const noexcept {
+    std::scoped_lock lock{VmaMutex()};
     if (handle) {
         vmaDestroyImage(allocator, handle, allocation);
     }
 }
 
 Image::MemoryBlock Image::GetMemoryBlock() const noexcept {
+    std::scoped_lock lock{VmaMutex()};
     if (allocation == nullptr) {
         return {};
     }
@@ -541,12 +544,14 @@ Image::MemoryBlock Image::GetMemoryBlock() const noexcept {
 }
 
 void Buffer::Flush() const {
+    std::scoped_lock lock{VmaMutex()};
     if (!is_coherent) {
         vmaFlushAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
     }
 }
 
 void Buffer::Invalidate() const {
+    std::scoped_lock lock{VmaMutex()};
     if (!is_coherent) {
         vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
     }
@@ -557,6 +562,7 @@ void Buffer::SetObjectNameEXT(const char* name) const {
 }
 
 void Buffer::Release() const noexcept {
+    std::scoped_lock lock{VmaMutex()};
     if (handle) {
         vmaDestroyBuffer(allocator, handle, allocation);
     }

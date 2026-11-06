@@ -7,6 +7,7 @@
 #pragma once
 
 #include <climits>
+#include <mutex>
 #include <vector>
 
 #include "common/common_types.h"
@@ -103,6 +104,10 @@ private:
     size_t Region(size_t iter) const noexcept {
         return iter / region_size;
     }
+
+    // EDEN_NX2_PARALLEL_DRAW: the buffer worker and the back's texture uploads both request
+    // staging buffers, so the pool's cache and stream cursor need a lock.
+    std::mutex mutex;
 
     const Device& device;
     MemoryAllocator& memory_allocator;

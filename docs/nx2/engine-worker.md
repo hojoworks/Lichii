@@ -332,10 +332,27 @@ replays both after the join. It renders correctly.
 | parallel, spin, stable order | 51.3 |
 
 Starting the worker **before** the texture half (to force overlap) crashed with an
-access violation (`0x130` read) inside a driver module while the intro was
-decoding. The reorder was reverted; the stable order runs. The crash means the
-worker and the back must not touch the Vulkan descriptor/staging state in that
-window without a stronger contract.
+access violation (`0x130` read) inside `nvoglv64.dll` while the intro was
+decoding. Two root causes were found and fixed, and it still crashed:
+
+- VMA is created with `VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT`, so the
+  allocator is not thread-safe; a global `VmaMutex()` now covers allocation,
+  destruction, mapping and sparse memory (`vma_lock.h`).
+- `StagingBufferPool` (stream cursor, per-level caches) had no lock; it now has
+  one.
+
+The crash survived both, so more of the renderer's Vulkan state is shared than
+the caches show (command pools, descriptor ring, video decoder, memory manager).
+A second renderer thread needs a full thread-safety audit, not a split.
+
+**Decision: the concurrent draw resolver is abandoned for now.** The stable
+order (worker after the texture half) remains compiled behind
+`EDEN_NX2_PARALLEL_DRAW` as an experiment; it is at parity (51.3 vs 52.5 fps)
+and must not be enabled. The default serial path is the supported one.
+
+The VMA lock and the staging pool lock are kept: they are correct on their own
+and make future concurrent work possible.
+
 
 Fast-path timing per draw (stable order):
 

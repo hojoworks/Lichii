@@ -25,6 +25,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/settings.h"
+#include "video_core/vulkan_common/vma_lock.h"
 
 namespace Vulkan {
 namespace {
@@ -128,6 +129,7 @@ MemoryCommit &MemoryCommit::operator=(MemoryCommit &&rhs) noexcept {
 
 std::span<u8> MemoryCommit::Map()
 {
+    std::scoped_lock lock{VmaMutex()};
     if (!allocation) return {};
     if (!mapped_ptr) {
         if (vmaMapMemory(allocator, allocation, &mapped_ptr) != VK_SUCCESS) return {};
@@ -139,6 +141,7 @@ std::span<u8> MemoryCommit::Map()
 
 std::span<const u8> MemoryCommit::Map() const
 {
+    std::scoped_lock lock{VmaMutex()};
     if (!allocation) return {};
     if (!mapped_ptr) {
         void *p = nullptr;
@@ -152,6 +155,7 @@ std::span<const u8> MemoryCommit::Map() const
 
 void MemoryCommit::Unmap()
 {
+    std::scoped_lock lock{VmaMutex()};
     if (allocation && mapped_ptr) {
         vmaUnmapMemory(allocator, allocation);
         mapped_ptr = nullptr;
@@ -159,6 +163,7 @@ void MemoryCommit::Unmap()
 }
 
 void MemoryCommit::Release() {
+    std::scoped_lock lock{VmaMutex()};
     if (allocation && allocator) {
         // Log GPU memory deallocation
         if (GPU::Logging::IsActive() &&
@@ -208,6 +213,7 @@ MemoryAllocator::~MemoryAllocator() = default;
 
 vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicated) const
 {
+    std::scoped_lock lock{VmaMutex()};
     const VmaAllocationCreateInfo alloc_ci = {
             // Best fit: images freed by the thousand leave holes in the blocks, which new ones
             // should fill before VMA takes another block.
@@ -305,6 +311,7 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
 }
 
 vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased) const {
+    std::scoped_lock lock{VmaMutex()};
     if (ci.imageType == VK_IMAGE_TYPE_1D) {
         return vk::Image{};
     }
@@ -325,6 +332,7 @@ vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool
 VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &requirements,
                                                    VkDeviceMemory &memory,
                                                    VkDeviceSize &offset) const {
+    std::scoped_lock lock{VmaMutex()};
     const VmaAllocationCreateInfo alloc_ci{
         .flags = 0,
         .usage = VMA_MEMORY_USAGE_UNKNOWN,
@@ -364,6 +372,7 @@ VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &
 }
 
 void MemoryAllocator::FreeSparseMemory(VmaAllocation allocation) const {
+    std::scoped_lock lock{VmaMutex()};
     if (allocation != VK_NULL_HANDLE) {
         vmaFreeMemory(allocator, allocation);
     }
@@ -373,6 +382,7 @@ bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, M
                                                  const VmaAllocationCreateInfo& alloc_ci,
                                                  VkBuffer& handle, VmaAllocation& allocation,
                                                  VmaAllocationInfo& alloc_info) const {
+    std::scoped_lock lock{VmaMutex()};
     // The buffer cache's buffers, churned by its collector: in a pool of their own (see
     // Device::SeparatePool). Anything over half a block takes the default blocks (dedicated).
     if (usage != MemoryUsage::DeviceLocal || ci.size > Device::SeparatePoolBlockSize / 2) {
@@ -403,6 +413,7 @@ bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, M
 }
 
 vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
+    std::scoped_lock lock{VmaMutex()};
     // MESA will do memcpy() if not marked as host cached, so just force mark it for most buffers
     auto const anv_flags = (usage == MemoryUsage::Stream
         && device.GetDriverID() == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA)
@@ -453,6 +464,7 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
 
 vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage,
                                          VkDeviceSize min_alignment) const {
+    std::scoped_lock lock{VmaMutex()};
     if (min_alignment <= 1) {
         return CreateBuffer(ci, usage);
     }
@@ -503,6 +515,7 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
 
 MemoryCommit MemoryAllocator::Commit(const VkMemoryRequirements &reqs, MemoryUsage usage)
 {
+    std::scoped_lock lock{VmaMutex()};
     const auto vma_usage = MemoryUsageVma(usage);
     VmaAllocationCreateInfo ci{};
     ci.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | MemoryUsageVmaFlags(usage);
@@ -535,6 +548,7 @@ MemoryCommit MemoryAllocator::Commit(const VkMemoryRequirements &reqs, MemoryUsa
 }
 
 MemoryCommit MemoryAllocator::Commit(const vk::Buffer &buffer, MemoryUsage usage) {
+    std::scoped_lock lock{VmaMutex()};
     // Allocate memory appropriate for this buffer automatically
     const auto vma_usage = MemoryUsageVma(usage);
 
