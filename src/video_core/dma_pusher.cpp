@@ -183,8 +183,18 @@ bool DmaPusher::Step() {
         // A resumed entry is read again: the words after the acquire may be new by now.
         // A safe read flushes the caches, which belong to the split's back thread while it runs
         // (the split only starts with unsafe reads; the settings can change mid-game).
-        const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
-                              (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
+        // Command lists are buffer data: the precise path flushes exactly the pages a dispatch or
+        // copy wrote, so the whole-range safe read is only needed for the explicit Safe DMA level.
+        // The split still takes the precise path because the caches belong to its back thread.
+        // EDEN_NX2_SAFE_LIST_READ=0/1 forces one side for measurement.
+        static const int safe_override = [] {
+            const char* value = std::getenv("EDEN_NX2_SAFE_LIST_READ");
+            return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+        }();
+        const bool use_safe =
+            !VideoCommon::GpuSplit::Get().Active() &&
+            (safe_override >= 0 ? safe_override == 1
+                                : (Settings::IsDMALevelDefault() ? false : Settings::IsDMALevelSafe()));
         if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
@@ -706,12 +716,15 @@ bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::ListFlush);
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
+    // The pages are GPU-written: flush every cache that can hold them, as the whole-range safe
+    // read does, but only for the pages a dispatch or copy actually wrote. Clean command lists
+    // skip this entirely.
     const bool dirty = memory_manager.IsMemoryDirty(first_page, end_page - first_page,
-                                                    VideoCommon::CacheType::BufferCache);
+                                                    VideoCommon::CacheType::All);
     if (dirty) {
         VideoCommon::GpuSplit::Get().Run(
             [memory = &memory_manager, first_page, size = end_page - first_page] {
-                memory->FlushRegion(first_page, size, VideoCommon::CacheType::BufferCache);
+                memory->FlushRegion(first_page, size, VideoCommon::CacheType::All);
             },
             VideoCommon::DrainSite::ListFlush);
     }
