@@ -132,6 +132,22 @@ Id GetCbuf(EmitContext& ctx, Id result_type, Id UniformDefinitions::*member_ptr,
         return ctx.OpFunctionCall(result_type, indirect_func, ctx.Def(binding), buffer_offset);
     }
 
+    if (ctx.gpu_draws) {
+        // EDEN_NX2_GPU_DRAWS: add this draw's constant slice to the access offset.
+        const Id cb_index{ctx.Const(binding.U32())};
+        const Id stride{ctx.Const(static_cast<u32>(Info::MAX_CBUFS))};
+        const Id scaled{ctx.OpIMul(ctx.U32[1], ctx.draw_id, stride)};
+        const Id index{ctx.OpIAdd(ctx.U32[1], scaled, cb_index)};
+        const Id pointer{ctx.OpAccessChain(ctx.draw_params_u32, ctx.draw_params,
+                                           ctx.u32_zero_value, index)};
+        const Id base_bytes{ctx.OpLoad(ctx.U32[1], pointer)};
+        const u32 log2_size{static_cast<u32>(std::countr_zero(element_size))};
+        const Id base{log2_size == 0 ? base_bytes
+                                     : ctx.OpShiftRightLogical(ctx.U32[1], base_bytes,
+                                                               ctx.Const(log2_size))};
+        buffer_offset = ctx.OpIAdd(ctx.U32[1], buffer_offset, base);
+    }
+
     const Id cbuf{ctx.cbufs[binding.U32()].*member_ptr};
     const Id access_chain{ctx.OpAccessChain(uniform_type, cbuf, ctx.u32_zero_value, buffer_offset)};
     const Id val = ctx.OpLoad(result_type, access_chain);

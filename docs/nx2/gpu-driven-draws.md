@@ -106,6 +106,38 @@ changes.
 3. **Textures via descriptor indexing.** Recover the runs lost to texture
    changes; extend to storage buffers and texture buffers.
 
+## Current status of the DrawID branch (2026-11-06)
+
+Implemented, compiled, and **disabled by default** behind `EDEN_NX2_GPU_DRAWS=1`:
+
+- multi-draw extension and entry points;
+- set-1 DrawParams layout in every graphics pipeline;
+- a host-visible DrawParams buffer + descriptor set per pipeline, bound before
+  the draw;
+- shader-side set-1 storage buffer, `DrawIndex` in the vertex stage, a flat
+  `u32` varying at `IR::NUM_GENERICS` for the fragment stage, and the
+  `GetCbuf` base addition.
+
+**It crashes at boot** (`nvoglv64.dll`, access violation) before any pipeline
+log line. The default build (flag off) is unaffected and runs at ~52 fps.
+
+Most likely causes, in order:
+
+1. **Geometry/tessellation/mesh pipelines**: the vertex stage writes the flat
+   varying, the fragment stage reads it, but an intermediate geometry/tessellation
+   stage does not forward it. Restricting the flag to pipelines whose stage set is
+   exactly vertex+fragment would fix this; the flag currently reaches every
+   graphics stage.
+2. **Descriptor-buffer set 0 + normal set 1** mixed in one pipeline layout: the
+   driver may not accept `vkCmdBindDescriptorSets` for set 1 in a command buffer
+   that also uses descriptor buffers without further setup.
+3. Invalid SPIR-V accepted by the loader and crashed in the driver.
+
+Next step: install the Vulkan SDK validation layers, build with
+`VK_LAYER_KHRONOS_validation`, and enable the emulator's validation setting so
+the crash becomes a precise VUID. That is cheaper than bisecting SPIR-V by hand.
+Then: restrict the flag to vertex+fragment pipelines and retest.
+
 ## Implementation map (next commits)
 
 ### Host: DrawParams set 1

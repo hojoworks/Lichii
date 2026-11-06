@@ -163,6 +163,7 @@ Id TypeId(const EmitContext& ctx, IR::Type type) {
 
 void Traverse(EmitContext& ctx, IR::Program& program) {
     IR::Block* current_block{};
+    bool first_block{true};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case IR::AbstractSyntaxNode::Type::Block: {
@@ -172,6 +173,12 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             }
             current_block = node.data.block;
             ctx.AddLabel(label);
+            if (first_block) {
+                first_block = false;
+                if (ctx.gpu_draws && ctx.stage == Stage::VertexB) {
+                    ctx.OpStore(ctx.draw_id_output, ctx.draw_id);
+                }
+            }
             for (IR::Inst& inst : node.data.block->Instructions()) {
                 EmitInst(ctx, &inst);
             }

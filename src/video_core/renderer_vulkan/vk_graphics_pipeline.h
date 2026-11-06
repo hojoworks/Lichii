@@ -23,6 +23,7 @@
 #include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+#include "video_core/vulkan_common/vma.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -101,6 +102,8 @@ public:
         const GraphicsPipelineCacheKey& key, std::array<vk::ShaderModule, NUM_STAGES> stages,
         const std::array<const Shader::Info*, NUM_STAGES>& infos,
         std::function<std::array<vk::ShaderModule, NUM_STAGES>()> emit_stages = {});
+
+    ~GraphicsPipeline();
 
     static std::chrono::nanoseconds TakeHoldTime() noexcept;
 
@@ -250,6 +253,11 @@ private:
     vk::DescriptorSetLayout descriptor_set_layout;
     /// EDEN_NX2_GPU_DRAWS: set 1 (per-draw constant bases).
     vk::DescriptorSetLayout draw_params_set_layout;
+    VkBuffer draw_params_buffer{};
+    VmaAllocation draw_params_allocation{};
+    void* draw_params_mapped{};
+    vk::DescriptorPool draw_params_pool;
+    VkDescriptorSet draw_params_set{};
     DescriptorAllocator descriptor_allocator;
     vk::PipelineLayout pipeline_layout;
     vk::DescriptorUpdateTemplate descriptor_update_template;

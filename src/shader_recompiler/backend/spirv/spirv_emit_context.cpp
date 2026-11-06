@@ -478,6 +478,8 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
       requires_coherent_image_memory{program.info.requires_coherent_image_memory},
       stage{program.stage}, texture_rescaling_index{bindings.texture_scaling_index},
       image_rescaling_index{bindings.image_scaling_index} {
+    gpu_draws = (stage == Stage::VertexB || stage == Stage::Fragment) &&
+                std::getenv("EDEN_NX2_GPU_DRAWS") != nullptr;
     const bool is_unified{profile.unified_descriptor_binding};
     u32& uniform_binding{is_unified ? bindings.unified : bindings.uniform_buffer};
     u32& storage_binding{is_unified ? bindings.unified : bindings.storage_buffer};
@@ -487,6 +489,9 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
+    if (gpu_draws) {
+        DefineDrawParams();
+    }
     DefineMesh(program);
     DefineLocalMemory(program);
     DefineSharedMemory(program);
@@ -1423,6 +1428,27 @@ void EmitContext::DefineConstantBufferIndirectFunctions(const Info& info) {
     }
 }
 
+void EmitContext::DefineDrawParams() {
+    AddExtension("SPV_KHR_storage_buffer_storage_class");
+    const Id array_type{TypeRuntimeArray(U32[1])};
+    Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+
+    const Id struct_type{TypeStruct(array_type)};
+    Decorate(struct_type, spv::Decoration::Block);
+    MemberName(struct_type, 0, "cb_base");
+    MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+
+    const Id pointer_type{TypePointer(spv::StorageClass::StorageBuffer, struct_type)};
+    draw_params = AddGlobalVariable(pointer_type, spv::StorageClass::StorageBuffer);
+    Decorate(draw_params, spv::Decoration::DescriptorSet, 1U);
+    Decorate(draw_params, spv::Decoration::Binding, 0U);
+    Name(draw_params, "draw_params");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(draw_params);
+    }
+    draw_params_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+}
+
 void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     if (info.storage_buffers_descriptors.empty()) {
         return;
@@ -1761,6 +1787,17 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (loads[IR::Attribute::DrawID]) {
         draw_index = define_draw_parameter(spv::BuiltIn::DrawIndex);
     }
+    if (gpu_draws) {
+        if (stage == Stage::VertexB) {
+            draw_id = loads[IR::Attribute::DrawID] ? draw_index
+                                                   : define_draw_parameter(spv::BuiltIn::DrawIndex);
+        } else if (stage == Stage::Fragment) {
+            draw_id = DefineInput(*this, U32[1], false);
+            Decorate(draw_id, spv::Decoration::Flat);
+            Decorate(draw_id, spv::Decoration::Location, static_cast<u32>(IR::NUM_GENERICS));
+            Name(draw_id, "draw_id");
+        }
+    }
     if (loads[IR::Attribute::FrontFace]) {
         front_face = DefineInput(*this, U1, true, spv::BuiltIn::FrontFacing);
     }
@@ -1996,6 +2033,12 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
         if (info.stores.Generic(index)) {
             DefineGenericOutput(*this, index, invocations);
         }
+    }
+    if (gpu_draws && stage == Stage::VertexB) {
+        draw_id_output = DefineOutput(*this, U32[1], std::nullopt);
+        Decorate(draw_id_output, spv::Decoration::Flat);
+        Decorate(draw_id_output, spv::Decoration::Location, static_cast<u32>(IR::NUM_GENERICS));
+        Name(draw_id_output, "draw_id");
     }
     switch (stage) {
     case Stage::TessellationControl:

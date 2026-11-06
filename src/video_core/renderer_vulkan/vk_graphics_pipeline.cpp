@@ -28,6 +28,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/vulkan_common/vma_lock.h"
 #include "video_core/shader_handle_program.h"
 #include "video_core/shader_notify.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -355,6 +356,69 @@ GraphicsPipeline::GraphicsPipeline(
     const VkDescriptorSetLayout set_layout{*descriptor_set_layout};
     draw_params_set_layout = builder.CreateDrawParamsSetLayout();
     pipeline_layout = builder.CreatePipelineLayout(set_layout, *draw_params_set_layout);
+
+    if (std::getenv("EDEN_NX2_GPU_DRAWS") != nullptr) {
+        // Host-visible table of per-draw constant base offsets, indexed by gl_DrawID.
+        constexpr u32 MaxDraws = 64;
+        constexpr u32 DrawParamsBytes = u32{Shader::Info::MAX_CBUFS} * MaxDraws * sizeof(u32);
+        {
+            std::scoped_lock lock{VmaMutex()};
+            const VkBufferCreateInfo buffer_ci{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .size = DrawParamsBytes,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+            };
+            VmaAllocationCreateInfo alloc_ci{};
+            alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+            alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo alloc_info{};
+            vk::Check(vmaCreateBuffer(device.GetAllocator(), &buffer_ci, &alloc_ci,
+                                      &draw_params_buffer, &draw_params_allocation, &alloc_info));
+            draw_params_mapped = alloc_info.pMappedData;
+            std::memset(draw_params_mapped, 0, DrawParamsBytes);
+        }
+        const VkDescriptorPoolSize pool_sizes[1]{
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        };
+        draw_params_pool = device.GetLogical().CreateDescriptorPool({
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .maxSets = 1,
+            .poolSizeCount = 1,
+            .pPoolSizes = pool_sizes,
+        });
+        const VkDescriptorSetLayout set_layouts[1]{*draw_params_set_layout};
+        const VkDescriptorSetAllocateInfo allocate_info{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .descriptorPool = *draw_params_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = set_layouts,
+        };
+        draw_params_set = draw_params_pool.Allocate(allocate_info)[0];
+        const VkDescriptorBufferInfo buffer_info{draw_params_buffer, 0, DrawParamsBytes};
+        const VkWriteDescriptorSet write{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = draw_params_set,
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo = nullptr,
+            .pBufferInfo = &buffer_info,
+            .pTexelBufferView = nullptr,
+        };
+        device.GetLogical().UpdateDescriptorSets(std::span{&write, 1}, {});
+    }
+
     if (!uses_descriptor_buffer) {
         descriptor_update_template =
             builder.CreateTemplate(set_layout, *pipeline_layout, uses_push_descriptor);
@@ -417,6 +481,13 @@ GraphicsPipeline::GraphicsPipeline(
     configure_func = ConfigureFunc(present_stages, stage_infos);
     configure_buffer_func = BufferFunc(present_stages, stage_infos);
     build.emplace(worker_thread, std::move(func));
+}
+
+GraphicsPipeline::~GraphicsPipeline() {
+    if (draw_params_buffer) {
+        std::scoped_lock lock{VmaMutex()};
+        vmaDestroyBuffer(device.GetAllocator(), draw_params_buffer, draw_params_allocation);
+    }
 }
 
 void GraphicsPipeline::RunBufferJob(void* argument) {
@@ -1053,6 +1124,10 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                       rescaling_data = rescaling.Data(), is_rescaling, update_rescaling,
                       uses_render_area = render_area.uses_render_area,
                       render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
+        if (draw_params_set) {
+            cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline_layout, 1,
+                                      std::span{&draw_params_set, 1}, {});
+        }
         if (bind_descriptor_buffer) {
             const VkDescriptorBufferBindingInfoEXT binding_info{
                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};

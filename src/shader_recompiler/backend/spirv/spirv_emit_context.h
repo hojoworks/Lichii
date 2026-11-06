@@ -259,6 +259,12 @@ public:
 
     std::array<UniformDefinitions, Info::MAX_CBUFS> cbufs{};
     std::array<StorageDefinitions, Info::MAX_SSBOS> ssbos{};
+    /// EDEN_NX2_GPU_DRAWS: per-draw constant bases (set 1) and the draw index.
+    bool gpu_draws{};
+    Id draw_params{};
+    Id draw_params_u32{};
+    Id draw_id{};
+    Id draw_id_output{};
     std::vector<TextureBufferDefinition> texture_buffers;
     std::vector<ImageBufferDefinition> image_buffers;
     std::vector<TextureDefinition> textures;
@@ -418,6 +424,9 @@ private:
     void DefineSharedMemory(const IR::Program& program);
     void DefineSharedMemoryFunctions(const IR::Program& program);
     void DefineConstantBuffers(const Info& info, u32& binding);
+
+    /// EDEN_NX2_GPU_DRAWS: set 1 storage buffer holding per-draw constant base offsets.
+    void DefineDrawParams();
     void DefineConstantBufferIndirectFunctions(const Info& info);
     void DefineStorageBuffers(const Info& info, u32& binding);
     void DefineTextureBuffers(const Info& info, u32& binding);
