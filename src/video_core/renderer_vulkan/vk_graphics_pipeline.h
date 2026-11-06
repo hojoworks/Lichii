@@ -248,6 +248,8 @@ private:
     bool writes_storage{};
 
     vk::DescriptorSetLayout descriptor_set_layout;
+    /// EDEN_NX2_GPU_DRAWS: set 1 (per-draw constant bases).
+    vk::DescriptorSetLayout draw_params_set_layout;
     DescriptorAllocator descriptor_allocator;
     vk::PipelineLayout pipeline_layout;
     vk::DescriptorUpdateTemplate descriptor_update_template;

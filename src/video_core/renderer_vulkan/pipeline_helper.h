@@ -184,6 +184,24 @@ public:
         return result;
     }
 
+    /// EDEN_NX2_GPU_DRAWS: set 1, one storage buffer holding per-draw constant bases.
+    vk::DescriptorSetLayout CreateDrawParamsSetLayout() const {
+        const VkDescriptorSetLayoutBinding draw_binding{
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+            .pImmutableSamplers = nullptr,
+        };
+        return device->GetLogical().CreateDescriptorSetLayout({
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .bindingCount = 1,
+            .pBindings = &draw_binding,
+        });
+    }
+
     vk::DescriptorSetLayout CreateDescriptorSetLayout(bool use_push_descriptor,
                                                       bool use_descriptor_buffer = false) const {
         if (bindings.empty()) {
@@ -242,7 +260,8 @@ public:
         });
     }
 
-    vk::PipelineLayout CreatePipelineLayout(VkDescriptorSetLayout descriptor_set_layout) const {
+    vk::PipelineLayout CreatePipelineLayout(VkDescriptorSetLayout descriptor_set_layout,
+                                            VkDescriptorSetLayout draw_params_layout = {}) const {
         using Shader::Backend::SPIRV::RenderAreaLayout;
         using Shader::Backend::SPIRV::RescalingLayout;
         const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
@@ -257,12 +276,17 @@ public:
             .size = static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
                     static_cast<u32>(sizeof(RenderAreaLayout)),
         };
+        const std::array<VkDescriptorSetLayout, 2> set_layouts{descriptor_set_layout,
+                                                               draw_params_layout};
+        const u32 set_count = draw_params_layout != VK_NULL_HANDLE
+                                  ? 2U
+                                  : (descriptor_set_layout != VK_NULL_HANDLE ? 1U : 0U);
         return device->GetLogical().CreatePipelineLayout({
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .setLayoutCount = descriptor_set_layout ? 1U : 0U,
-            .pSetLayouts = bindings.empty() ? nullptr : &descriptor_set_layout,
+            .setLayoutCount = set_count,
+            .pSetLayouts = set_count != 0 ? set_layouts.data() : nullptr,
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &range,
         });

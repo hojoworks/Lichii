@@ -353,7 +353,8 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     const VkDescriptorSetLayout set_layout{*descriptor_set_layout};
-    pipeline_layout = builder.CreatePipelineLayout(set_layout);
+    draw_params_set_layout = builder.CreateDrawParamsSetLayout();
+    pipeline_layout = builder.CreatePipelineLayout(set_layout, *draw_params_set_layout);
     if (!uses_descriptor_buffer) {
         descriptor_update_template =
             builder.CreateTemplate(set_layout, *pipeline_layout, uses_push_descriptor);

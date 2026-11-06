@@ -106,6 +106,56 @@ changes.
 3. **Textures via descriptor indexing.** Recover the runs lost to texture
    changes; extend to storage buffers and texture buffers.
 
+## Implementation map (next commits)
+
+### Host: DrawParams set 1
+
+- `src/video_core/renderer_vulkan/pipeline_helper.h`
+  - add `vk::DescriptorSetLayout draw_params_layout` (one `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`,
+    binding 0, `VK_SHADER_STAGE_ALL_GRAPHICS`);
+  - `CreatePipelineLayout(VkDescriptorSetLayout set0, VkDescriptorSetLayout set1)` with
+    `setLayoutCount = 2` (or 1 when set1 is null).
+- `src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp`
+  - create the set-1 layout in the constructor next to `descriptor_set_layout`;
+  - pass it to `CreatePipelineLayout`;
+  - keep a `vk::DescriptorSet draw_params_set` from a small pool (or push it) and update it
+    with the DrawParams buffer handle once per batch;
+  - bind set 1 in the draw/batch record lambda.
+- `src/video_core/renderer_vulkan/vk_buffer_cache.*` (or a small owner in the rasterizer)
+  - a host-visible, coherent buffer of `u32 cb_base[MAX_CBUFS]` per draw, grown as needed;
+  - `BindDrawParams(buffer, range)` and `WriteDrawParams(index, bases)`.
+- `src/video_core/renderer_vulkan/vk_rasterizer.*`
+  - `PendingBatch { pipeline, framebuffer, key, vector<PendingDraw> }`;
+  - append when the key matches, flush at pipeline/target/viewport/scissor/texture/storage
+    changes, clears, dispatches, fences and frame end;
+  - on flush, fill the DrawParams buffer, bind set 1, and issue
+    `DrawMultiIndexedEXT` / `DrawMultiEXT`.
+
+### Shader: DrawID and the constant base
+
+- `src/shader_recompiler/backend/spirv/spirv_emit_context.h/.cpp`
+  - declare a set-1 storage buffer `DrawParams { u32 cb_base[MAX_CBUFS]; }` (`std430`);
+  - vertex stage: `OpVariable` with `BuiltIn DrawIndex` (`SPV_KHR_shader_draw_parameters`);
+  - reserve a flat `u32` varying (vertex out, fragment in) carrying the draw index; add it to
+    the interface agreement in `pipeline_helper`/`StageInfo`;
+  - expose the resolved draw-index `Id` on `EmitContext`.
+- `src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`
+  - `GetCbuf`: load `cb_base` for the current draw and add it to `buffer_offset` before the
+    access chain (line 136);
+  - the indirect CB function (`load_const_func_*`) must add the same base;
+  - fragment-stage reads use the flat varying; vertex-stage reads use `DrawIndex`.
+- `Profile`/`RuntimeInfo`: enable `SPV_KHR_shader_draw_parameters` and the storage-buffer
+  binding for both stages.
+
+### Validation
+
+1. Plumbing with a dummy DrawParams buffer and an unchanged shader: rendering byte-identical.
+2. DrawID injection with batches disabled: rendering byte-identical against serial.
+3. Batches on, screenshot diff, then `bench.py` Low+split and High.
+
+The first two checkpoints are cheap and catch layout/interface mistakes before any timing
+claim. Do not skip them.
+
 ## Risks
 
 - **Recompiler complexity.** Every constant access must add the DrawID base;
