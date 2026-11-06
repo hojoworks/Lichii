@@ -1338,9 +1338,19 @@ bool Device::GetSuitability(bool requires_swapchain) {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT;
         SetNext(next, properties.custom_border_color);
     }
+    if (extensions.multi_draw) {
+        properties.multi_draw.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_PROPERTIES_EXT;
+        SetNext(next, properties.multi_draw);
+    }
 
     // Perform the property fetch.
     physical.GetProperties2(properties2);
+
+    if (extensions.multi_draw) {
+        LOG_INFO(Render_Vulkan, "VK_EXT_multi_draw enabled, maxMultiDrawCount={}",
+                 properties.multi_draw.maxMultiDrawCount);
+    }
 
     // Store base properties
     properties.properties = properties2.properties;

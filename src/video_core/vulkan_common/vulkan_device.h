@@ -94,6 +94,7 @@ VK_DEFINE_HANDLE(VmaPool)
     EXTENSION(EXT, CONSERVATIVE_RASTERIZATION, conservative_rasterization)                         \
     EXTENSION(EXT, DEPTH_RANGE_UNRESTRICTED, depth_range_unrestricted)                             \
     EXTENSION(EXT, MEMORY_BUDGET, memory_budget)                                                   \
+    EXTENSION(EXT, MULTI_DRAW, multi_draw)                                                         \
     EXTENSION(EXT, ROBUSTNESS_2, robustness_2)                                                     \
     EXTENSION(EXT, SAMPLER_FILTER_MINMAX, sampler_filter_minmax)                                   \
     EXTENSION(EXT, SHADER_STENCIL_EXPORT, shader_stencil_export)                                   \
@@ -679,6 +680,14 @@ FN_MAX_LIMIT_LIST
     bool IsExtMeshShaderSupported() const {
         return extensions.mesh_shader && features.mesh_shader.taskShader &&
                features.mesh_shader.meshShader;
+    }
+
+    /// VK_EXT_multi_draw: batches of draws in one command.
+    bool IsExtMultiDrawSupported() const {
+        return extensions.multi_draw;
+    }
+    u32 MaxMultiDrawCount() const {
+        return properties.multi_draw.maxMultiDrawCount;
     }
 
     /// Returns true if the device supports VK_KHR_image_format_list.
@@ -1302,6 +1311,7 @@ private:
         VkPhysicalDeviceMaintenance5PropertiesKHR maintenance5{};
         VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve{};
         VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color{};
+        VkPhysicalDeviceMultiDrawPropertiesEXT multi_draw{};
 
         VkPhysicalDeviceProperties properties{};
     };
