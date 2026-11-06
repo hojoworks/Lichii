@@ -45,6 +45,16 @@ struct State {
     u64 prev_hash{};
     u64 prev_pipeline{};
     u64 current_run{};
+    // GPU-driven batching potential: consecutive draws sharing pipeline, render target, viewport,
+    // scissor and no storage writes. Constants/textures may still differ (DrawID handles those).
+    u64 prev_batch_key{};
+    u64 batch_run{};
+    u64 batch_consecutive{};
+    u64 batch_runs{};
+    u64 batch_run_draws{};
+    u64 batch_draws_ge2{};
+    u64 batch_draws_ge4{};
+    u64 batch_draws_ge8{};
     std::unordered_map<u64, u64> hash_last_ns;
     std::unordered_map<u64, u64> pipeline_of_hash;
 };
@@ -63,13 +73,18 @@ inline void ReportLocked(State& s, std::chrono::steady_clock::time_point now) {
              "nx2 draw probe {:.1f}s: {} draws ({:.0f}/s) | distinct state {} | new {} ({:.1f}%) | "
              "repeat from a previous frame {} ({:.1f}%), same frame {} ({:.1f}%) | consecutive "
              "same-state {} ({:.1f}%), {} runs averaging {:.1f} | consecutive same-pipeline "
-             "{} ({:.1f}%)",
+             "{} ({:.1f}%) | batchable: {} runs averaging {:.1f}, draws in runs >=2 {} ({:.1f}%), "
+             ">=4 {} ({:.1f}%), >=8 {} ({:.1f}%)",
              seconds, s.draws, static_cast<double>(s.draws) / seconds, s.distinct, s.unique,
              percent(s.unique, s.draws), s.repeat_prev_frame, percent(s.repeat_prev_frame, s.draws),
              s.repeat_same_frame, percent(s.repeat_same_frame, s.draws), s.consecutive_same,
              percent(s.consecutive_same, s.draws), s.runs,
              s.runs != 0 ? static_cast<double>(s.run_draws) / static_cast<double>(s.runs) : 0.0,
-             s.same_pipeline_consecutive, percent(s.same_pipeline_consecutive, s.draws));
+             s.same_pipeline_consecutive, percent(s.same_pipeline_consecutive, s.draws), s.batch_runs,
+             s.batch_runs != 0 ? static_cast<double>(s.batch_run_draws) / s.batch_runs : 0.0,
+             s.batch_draws_ge2, percent(s.batch_draws_ge2, s.draws), s.batch_draws_ge4,
+             percent(s.batch_draws_ge4, s.draws), s.batch_draws_ge8,
+             percent(s.batch_draws_ge8, s.draws));
     ++s.window;
     s.draws = 0;
     s.unique = 0;
@@ -80,9 +95,14 @@ inline void ReportLocked(State& s, std::chrono::steady_clock::time_point now) {
     s.same_pipeline_consecutive = 0;
     s.runs = 0;
     s.run_draws = 0;
+    s.batch_runs = 0;
+    s.batch_run_draws = 0;
+    s.batch_draws_ge2 = 0;
+    s.batch_draws_ge4 = 0;
+    s.batch_draws_ge8 = 0;
 }
 
-inline void Observe(u64 hash, u64 pipeline) {
+inline void Observe(u64 hash, u64 pipeline, u64 batch_key) {
     if (!Enabled()) {
         return;
     }
@@ -96,6 +116,27 @@ inline void Observe(u64 hash, u64 pipeline) {
         s.window_start = now;
     }
     ++s.draws;
+    // GPU-driven batching runs.
+    if (batch_key == s.prev_batch_key) {
+        ++s.batch_consecutive;
+        ++s.batch_run;
+    } else {
+        if (s.batch_run >= 2) {
+            ++s.batch_runs;
+            s.batch_run_draws += s.batch_run;
+            if (s.batch_run >= 2) {
+                s.batch_draws_ge2 += s.batch_run;
+            }
+            if (s.batch_run >= 4) {
+                s.batch_draws_ge4 += s.batch_run;
+            }
+            if (s.batch_run >= 8) {
+                s.batch_draws_ge8 += s.batch_run;
+            }
+        }
+        s.batch_run = 1;
+        s.prev_batch_key = batch_key;
+    }
     if (hash == s.prev_hash) {
         ++s.consecutive_same;
         ++s.current_run;

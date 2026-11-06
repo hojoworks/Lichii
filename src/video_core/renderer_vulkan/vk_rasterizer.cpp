@@ -491,6 +491,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fields[n++] = regs.scissor_test[0].max_x;
         fields[n++] = regs.scissor_test[0].min_y;
         fields[n++] = regs.scissor_test[0].max_y;
+        u64 texture_hash = 0xcbf29ce484222325ULL;
         for (u32 stage = 0; stage < 5; ++stage) {
             const auto& handles = maxwell3d->state.shader_stages[stage].const_buffers[2];
             if (handles.enabled && handles.size >= 4) {
@@ -500,15 +501,43 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                                             count * sizeof(u32));
                 for (u32 i = 0; i < count; ++i) {
                     fields[n++] = words[i];
+                    texture_hash = (texture_hash ^ words[i]) * 0x100000001b3ULL;
                 }
                 fields[n++] = count;
+                texture_hash = (texture_hash ^ count) * 0x100000001b3ULL;
             } else {
                 fields[n++] = 0;
             }
         }
+        std::array<u64, 32> batch_fields{};
+        size_t batch_count = 0;
+        batch_fields[batch_count++] = reinterpret_cast<u64>(pipeline);
+        batch_fields[batch_count++] = regs.rt[0].Address();
+        batch_fields[batch_count++] = regs.rt[0].width;
+        batch_fields[batch_count++] = regs.rt[0].height;
+        batch_fields[batch_count++] = static_cast<u32>(regs.rt[0].format);
+        batch_fields[batch_count++] = regs.rt_control.count;
+        for (u32 i = 0; i < 8; ++i) {
+            batch_fields[batch_count++] = regs.rt_control.Map(i);
+        }
+        batch_fields[batch_count++] =
+            static_cast<u64>(regs.viewports[0].x) |
+            (static_cast<u64>(regs.viewports[0].width) << 32);
+        batch_fields[batch_count++] =
+            static_cast<u64>(regs.viewports[0].y) |
+            (static_cast<u64>(regs.viewports[0].height) << 32);
+        batch_fields[batch_count++] =
+            static_cast<u64>(regs.scissor_test[0].min_x) |
+            (static_cast<u64>(regs.scissor_test[0].max_x) << 32);
+        batch_fields[batch_count++] =
+            static_cast<u64>(regs.scissor_test[0].min_y) |
+            (static_cast<u64>(regs.scissor_test[0].max_y) << 32);
+        batch_fields[batch_count++] = texture_hash;
+        batch_fields[batch_count++] = static_cast<u32>(regs.sampler_binding);
         VideoCommon::Nx2DrawProbe::Observe(
             VideoCommon::Nx2DrawProbe::HashFields(fields.data(), n),
-            reinterpret_cast<u64>(pipeline));
+            reinterpret_cast<u64>(pipeline),
+            VideoCommon::Nx2DrawProbe::HashFields(batch_fields.data(), batch_count));
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
