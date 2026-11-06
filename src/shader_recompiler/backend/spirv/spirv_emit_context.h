@@ -427,6 +427,8 @@ private:
 
     /// EDEN_NX2_GPU_DRAWS: set 1 storage buffer holding per-draw constant base offsets.
     void DefineDrawParams();
+    /// A generic varying location free in this stage's interface.
+    u32 DrawIdLocation(const Info& info) const;
     void DefineConstantBufferIndirectFunctions(const Info& info);
     void DefineStorageBuffers(const Info& info, u32& binding);
     void DefineTextureBuffers(const Info& info, u32& binding);

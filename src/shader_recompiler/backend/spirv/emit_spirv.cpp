@@ -176,7 +176,7 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             if (first_block) {
                 first_block = false;
                 if (ctx.gpu_draws && ctx.stage == Stage::VertexB) {
-                    ctx.OpStore(ctx.draw_id_output, ctx.draw_id);
+                    ctx.OpStore(ctx.draw_id_output, ctx.OpLoad(ctx.U32[1], ctx.draw_id));
                 }
             }
             for (IR::Inst& inst : node.data.block->Instructions()) {

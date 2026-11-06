@@ -108,35 +108,36 @@ changes.
 
 ## Current status of the DrawID branch (2026-11-06)
 
-Implemented, compiled, and **disabled by default** behind `EDEN_NX2_GPU_DRAWS=1`:
+Implemented, compiled, and **enabled only behind `EDEN_NX2_GPU_DRAWS=1`**:
 
 - multi-draw extension and entry points;
 - set-1 DrawParams layout in every graphics pipeline;
 - a host-visible DrawParams buffer + descriptor set per pipeline, bound before
   the draw;
 - shader-side set-1 storage buffer, `DrawIndex` in the vertex stage, a flat
-  `u32` varying at `IR::NUM_GENERICS` for the fragment stage, and the
+  `u32` varying in a free generic slot for the fragment stage, and the
   `GetCbuf` base addition.
 
-**It crashes at boot** (`nvoglv64.dll`, access violation) before any pipeline
-log line. The default build (flag off) is unaffected and runs at ~52 fps.
+**Validation-clean and rendering-identical.** Two bugs found with the Vulkan
+validation layer from the SDK:
 
-Most likely causes, in order:
+1. `OpStore` wrote the input variable (a pointer) instead of `OpLoad`ing it.
+2. The flat varying used location 32 / 31; with the 4 built-in components the
+   vertex output limit (128 components / 32 locations) overflowed. It now
+   searches down from location 30 for a slot free in both stages.
+3. The DrawParams array was a runtime array shared with the guest storage
+   buffers, which already decorate it with `ArrayStride`; it is now a
+   fixed-size array unique to DrawParams.
 
-1. **Geometry/tessellation/mesh pipelines**: the vertex stage writes the flat
-   varying, the fragment stage reads it, but an intermediate geometry/tessellation
-   stage does not forward it. Restricting the flag to pipelines whose stage set is
-   exactly vertex+fragment would fix this; the flag currently reaches every
-   graphics stage.
-2. **Descriptor-buffer set 0 + normal set 1** mixed in one pipeline layout: the
-   driver may not accept `vkCmdBindDescriptorSets` for set 1 in a command buffer
-   that also uses descriptor buffers without further setup.
-3. Invalid SPIR-V accepted by the loader and crashed in the driver.
+With base 0 (single draws, no batching yet) the OoT scene renders identically to
+the serial path. The only VUID left is the pre-existing
+`vkCmdCopyBuffer-pRegions-12482` in the buffer cache, unrelated to this work.
 
-Next step: install the Vulkan SDK validation layers, build with
-`VK_LAYER_KHRONOS_validation`, and enable the emulator's validation setting so
-the crash becomes a precise VUID. That is cheaper than bisecting SPIR-V by hand.
-Then: restrict the flag to vertex+fragment pipelines and retest.
+Next: the constant ring and the batch. The descriptor for constants must point
+at one ring for the whole batch (the DrawID base selects the slice), so
+`BindMappedUniformBuffer` / `BindHostGraphicsUniformBuffer` need a ring mode
+before `vkCmdDrawMultiIndexedEXT` can be issued.
+
 
 ## Implementation map (next commits)
 

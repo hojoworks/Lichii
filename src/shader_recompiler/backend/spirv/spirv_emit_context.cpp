@@ -1430,7 +1430,10 @@ void EmitContext::DefineConstantBufferIndirectFunctions(const Info& info) {
 
 void EmitContext::DefineDrawParams() {
     AddExtension("SPV_KHR_storage_buffer_storage_class");
-    const Id array_type{TypeRuntimeArray(U32[1])};
+    // A fixed-size array (MAX_CBUFS * max draws) keeps this type away from the shared runtime
+    // arrays the guest storage buffers use, which already carry their own ArrayStride.
+    constexpr u32 MaxDraws = 64;
+    const Id array_type{TypeArray(U32[1], Const(u32{Info::MAX_CBUFS} * MaxDraws))};
     Decorate(array_type, spv::Decoration::ArrayStride, 4U);
 
     const Id struct_type{TypeStruct(array_type)};
@@ -1447,6 +1450,23 @@ void EmitContext::DefineDrawParams() {
         interfaces.push_back(draw_params);
     }
     draw_params_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+}
+
+u32 EmitContext::DrawIdLocation(const Info& info) const {
+    constexpr u32 NumGenerics = static_cast<u32>(IR::NUM_GENERICS);
+    // Leave one location for the built-ins (Position and friends): the location index plus its
+    // components plus the built-ins must stay within maxVertexOutputComponents (32 locations).
+    const u32 max_location = NumGenerics >= 2 ? NumGenerics - 2 : 0;
+    for (u32 i = max_location + 1; i-- > 0;) {
+        if (stage == Stage::Fragment) {
+            if (runtime_info.generic_input_types[i] == AttributeType::Disabled) {
+                return i;
+            }
+        } else if (!info.stores.Generic(i)) {
+            return i;
+        }
+    }
+    return max_location;
 }
 
 void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
@@ -1794,7 +1814,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         } else if (stage == Stage::Fragment) {
             draw_id = DefineInput(*this, U32[1], false);
             Decorate(draw_id, spv::Decoration::Flat);
-            Decorate(draw_id, spv::Decoration::Location, static_cast<u32>(IR::NUM_GENERICS));
+            Decorate(draw_id, spv::Decoration::Location, DrawIdLocation(program.info));
             Name(draw_id, "draw_id");
         }
     }
@@ -2037,7 +2057,7 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
     if (gpu_draws && stage == Stage::VertexB) {
         draw_id_output = DefineOutput(*this, U32[1], std::nullopt);
         Decorate(draw_id_output, spv::Decoration::Flat);
-        Decorate(draw_id_output, spv::Decoration::Location, static_cast<u32>(IR::NUM_GENERICS));
+        Decorate(draw_id_output, spv::Decoration::Location, DrawIdLocation(program.info));
         Name(draw_id_output, "draw_id");
     }
     switch (stage) {

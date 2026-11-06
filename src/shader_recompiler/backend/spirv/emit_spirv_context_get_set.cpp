@@ -134,9 +134,10 @@ Id GetCbuf(EmitContext& ctx, Id result_type, Id UniformDefinitions::*member_ptr,
 
     if (ctx.gpu_draws) {
         // EDEN_NX2_GPU_DRAWS: add this draw's constant slice to the access offset.
+        const Id draw_id{ctx.OpLoad(ctx.U32[1], ctx.draw_id)};
         const Id cb_index{ctx.Const(binding.U32())};
         const Id stride{ctx.Const(static_cast<u32>(Info::MAX_CBUFS))};
-        const Id scaled{ctx.OpIMul(ctx.U32[1], ctx.draw_id, stride)};
+        const Id scaled{ctx.OpIMul(ctx.U32[1], draw_id, stride)};
         const Id index{ctx.OpIAdd(ctx.U32[1], scaled, cb_index)};
         const Id pointer{ctx.OpAccessChain(ctx.draw_params_u32, ctx.draw_params,
                                            ctx.u32_zero_value, index)};
