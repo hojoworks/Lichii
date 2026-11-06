@@ -251,6 +251,12 @@ option(YUZU_USE_BUNDLED_SDL3 "Download bundled SDL3 build" ${EXT_DEFAULT})
 # ffmpeg
 option(YUZU_USE_BUNDLED_FFMPEG "Download bundled FFmpeg" ${EXT_DEFAULT})
 cmake_dependent_option(YUZU_USE_EXTERNAL_FFMPEG "Build FFmpeg from external source" "${SOLARIS}" "NOT WIN32 AND NOT ANDROID" OFF)
+# The bundled MinGW FFmpeg has no AV1 decoder; Switch 2 title cinematics are AV1. The MSYS2
+# package carries dav1d and libaom, so allow choosing it without patching the forced bundle.
+option(YUZU_USE_SYSTEM_FFMPEG "Use the system FFmpeg instead of the bundled build" OFF)
+if (YUZU_USE_SYSTEM_FFMPEG)
+    set(YUZU_USE_BUNDLED_FFMPEG OFF)
+endif()
 
 # sirit
 set(BUNDLED_SIRIT_DEFAULT OFF)
