@@ -285,6 +285,21 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
         std::fclose(file);
     }
 
+    // Module-relative form of a frame, so the folded stacks can be symbolized offline.
+    const auto module_offset = [](DWORD64 address) -> std::string {
+        HMODULE module{};
+        char module_path[MAX_PATH] = "?";
+        DWORD64 offset = address;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(address), &module)) {
+            GetModuleFileNameA(module, module_path, sizeof(module_path));
+            offset = address - reinterpret_cast<DWORD64>(module);
+        }
+        const char* base = std::strrchr(module_path, '\\');
+        return fmt::format("{}+{:#x}", base != nullptr ? base + 1 : module_path, offset);
+    };
+
     // <out>.folded: every distinct stack with its count, root first ("thread;a;b;c count").
     std::map<std::string, unsigned> folded;
     for (const Sample& sample : samples) {
@@ -297,6 +312,23 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
     }
     if (std::FILE* const out = std::fopen((std::string{path} + ".folded").c_str(), "w")) {
         for (const auto& [line, count] : folded) {
+            std::fprintf(out, "%s %u\n", line.c_str(), count);
+        }
+        std::fclose(out);
+    }
+
+    // <out>.addr.folded: the same stacks as module-relative addresses, for offline symbolization.
+    std::map<std::string, unsigned> addr_folded;
+    for (const Sample& sample : samples) {
+        std::string line = targets[sample.thread].name;
+        for (unsigned i = sample.depth; i-- > 0;) {
+            line += ';';
+            line += module_offset(sample.frames[i]);
+        }
+        ++addr_folded[line];
+    }
+    if (std::FILE* const out = std::fopen((std::string{path} + ".addr.folded").c_str(), "w")) {
+        for (const auto& [line, count] : addr_folded) {
             std::fprintf(out, "%s %u\n", line.c_str(), count);
         }
         std::fclose(out);
