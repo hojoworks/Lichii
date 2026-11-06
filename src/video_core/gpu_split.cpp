@@ -19,6 +19,7 @@
 
 #include "common/dkb_cpu_trace.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -321,6 +322,14 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
         if (engine->fast_maxwell3d) {
             // Nx2Perf: as below without the profile zones (off with fast_maxwell3d) and the
             // virtual call.
+            struct FastTimer {
+                u64 start;
+                ~FastTimer() {
+                    if (start != 0) {
+                        Nx2FastProfile::Method(start);
+                    }
+                }
+            } fast_timer{Nx2FastProfile::Enabled() ? Nx2Profile::Ticks() : 0};
             using Tegra::Engines::Maxwell3D;
             auto* const maxwell3d = static_cast<Maxwell3D*>(engine);
             constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -353,11 +362,14 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
                 return count;
             }
             if ((head & Direct) != 0) {
+                Nx2FastProfile::Direct();
                 maxwell3d->ConsumeSink(*system);
                 maxwell3d->CallMethod(*system, method, argument, true);
             } else if (!maxwell3d->execution_mask[method]) {
+                Nx2FastProfile::Sunk();
                 maxwell3d->method_sink.emplace_back(method, argument);
             } else {
+                Nx2FastProfile::Executed();
                 maxwell3d->ConsumeSink(*system);
                 if ((head & HasSegment) != 0) {
                     maxwell3d->current_dma_segment = entry[1];
@@ -388,6 +400,12 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
         auto* const engine = back_engine;
         Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+        const u64 fast_start = Nx2FastProfile::Enabled() ? Nx2Profile::Ticks() : 0;
+        SCOPE_EXIT {
+            if (fast_start != 0) {
+                Nx2FastProfile::Multi(fast_start);
+            }
+        };
         engine->ConsumeSink(*system);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
@@ -419,6 +437,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     u64 read_position = 0;
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
+        Nx2FastProfile::Report("GPU back thread");
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};

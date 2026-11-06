@@ -227,19 +227,78 @@ Prefer (1) for the prototype: less duplicated submit code to keep in sync.
   uploads (visually obvious if ordering is wrong).
 - Counter for jobs per second by type, and for cross-lane waits.
 
-## Phases
+## Probe results (2026-11-06, `nx2-588bfa611b`, OoT Low+split)
 
-0. **Instrument.** Add zones/counters for the four engine entry points and a
-   per-channel submit counter. One build, one run: tells us the real copy share
-   on OoT and whether OoT submits more than one channel.
-1. **Copy worker v1** behind the flag: Fermi2D and MaxwellDMA jobs, conservative
-   ordering, Low+split first. Measure and screenshot.
-2. **Compute lane.** Move `DispatchCompute` behind the same worker (async
-   compute). Ampere genuinely overlaps this with 3D.
-3. **If the ceiling is low on OoT**, pivot to the measured back hot spots:
-   `bind stage buffers` (69 ms/s), `update buffers` (35 ms/s), `read handles`
-   (20 ms/s), and the 254 ms/s method stream. Those are the real OoT wall; the
-   worker is still the right architecture for compute/copy-heavy titles.
+Two instruments were added behind environment flags and are kept in the tree:
+
+- `EDEN_NX2_CMD_PROBE=1` hashes every submitted command list at
+  `nvhost_gpu::SubmitGPFIFOImpl` and classifies repeats per frame
+  (`src/video_core/nx2_cmd_probe.h`).
+- `EDEN_NX2_FAST_PROFILE=1` counts and times the fast Maxwell3D path without
+  disabling it (`src/video_core/nx2_profile.h`). `EDEN_NX2_GPU_PROFILE` cannot
+  do this: `maxwell_3d.cpp:61` turns the fast path off when it is set, which is
+  why every earlier zone profile describes a different code path.
+
+Command stream:
+
+| Measure | Value |
+|---|---|
+| command-list entries | ~520,000 per 2 s (≈4,400 per frame), ~67 MiB |
+| content new this session | ~22 % |
+| content seen in a previous frame | ~37 % |
+| content repeated inside the same frame | ~41 % |
+| same address, same content | ~59 % |
+| same address, different content | ~39 % |
+| whole submissions repeated across frames | **0 %** |
+
+So a whole-frame replay cache is dead: the guest rewrites its command buffers
+every frame. A per-list cache could cover roughly a third of entries, which is
+useful but not the big win.
+
+Fast path (draw time included in the method timer):
+
+| Measure | Value |
+|---|---|
+| back-thread CPU | ~875 ms/s (90 %) at 58 fps without instrumentation |
+| method stream | ~613 ms/s, ~4.6 M methods/s |
+| **draws** | **~403 ms/s, ~81,500/s, ~4.9 µs per draw** |
+| non-draw method writes | ~211 ms/s |
+| direct (macro) / sunk / executed | 80 % / 10 % / 3 % of methods |
+
+**The wall is per-draw setup, not command replay, not method dispatch, not the
+copy engine.** At ~1,700-2,100 draws per frame and ~4.9 µs each, draws are
+about 45 % of the back thread and 65 % of the method stream.
+
+Slow-path sub-zones, which match the per-draw cost, ranked:
+
+| Sub-zone | Share of draw setup |
+|---|---|
+| `bind stage buffers` | 32 % |
+| `update buffers` | 17 % |
+| `read handles` | 10 % |
+| `fill image views` | 7 % |
+| `dynamic state` | 7 % |
+| `configure` | 6 % |
+| `pipeline lookup` | 4 % |
+| draw record + rest | 17 % |
+
+## Revised direction
+
+1. **Draw-state memoization.** Hash the draw-relevant state (pipeline key,
+   render targets, viewport/scissor, enabled buffer bindings and sizes, draw
+   arguments) at `RasterizerVulkan::Draw` and see how often the same state
+   recurs across frames. Unlike command-list content, the state may repeat far
+   more often because the guest rewrites command buffers around the same state.
+2. **Multi-draw batching.** Consecutive draws that share pipeline and
+   descriptors differ only in vertex/index ranges. `VK_EXT_multi_draw`
+   (`vkCmdDrawMultiIndexedEXT`) can collapse their setup into one bind plus one
+   call. The same-frame 41 % repeat rate is direct evidence for batching.
+3. **Then parallel draw preparation** only if the state hash shows enough
+   independent work to fill a worker pool.
+
+The copy/compute worker described above stays a smaller, separate win (and the
+right architecture for compute-heavy titles); it is not the OoT wall.
+
 
 ## Risks
 

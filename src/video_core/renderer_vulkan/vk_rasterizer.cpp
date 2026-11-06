@@ -650,6 +650,18 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+    // Fast-path profiling: draw setup inside the method-stream timer (nx2_profile.h).
+    struct FastDrawTimer {
+        u64 start;
+        FastDrawTimer()
+            : start(VideoCommon::Nx2FastProfile::Enabled() ? VideoCommon::Nx2Profile::Ticks() : 0) {
+        }
+        ~FastDrawTimer() {
+            if (start != 0) {
+                VideoCommon::Nx2FastProfile::Draw(start);
+            }
+        }
+    } fast_draw_timer;
     {
         // A draw's first and count can come from memory a skipped (rejected) compute program
         // should have written. Past 16M vertices they are garbage: building the quad index

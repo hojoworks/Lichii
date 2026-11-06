@@ -29,6 +29,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_cmd_probe.h"
 
 namespace Service::Nvidia::Devices {
 namespace {
@@ -449,6 +450,10 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             const char* value = std::getenv("EDEN_NX2_PB_SNAPSHOT");
             return value == nullptr || value[0] != '0';
         }();
+        const bool command_probe = VideoCommon::Nx2CmdProbe::Enabled();
+        if (command_probe) {
+            VideoCommon::Nx2CmdProbe::BeginSubmission();
+        }
         if (snapshot && channel_state->memory_manager && channel_state->payload) {
             // Before the copy: a suspension during it must count as one after it.
             entries.snapshot_suspensions =
@@ -473,9 +478,28 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                     channel_state->memory_manager->ReadBlockUnsafe(
                         entry.addr, entries.submitted_words.data() + offset,
                         entry.size * sizeof(u32));
+                    if (command_probe) {
+                        VideoCommon::Nx2CmdProbe::Observe(
+                            reinterpret_cast<const u32*>(entries.submitted_words.data() + offset),
+                            entry.size, entry.addr.Value());
+                    }
                 }
                 offset += entry.size;
             }
+        }
+        if (command_probe) {
+            // Snapshot off (or no channel yet): read the entries for the probe itself.
+            if (!(snapshot && channel_state->memory_manager && channel_state->payload)) {
+                std::vector<u32> probe_words;
+                for (const auto& entry : entries.command_lists) {
+                    probe_words.resize(entry.size);
+                    system.ApplicationMemory().ReadBlock(entry.addr.Value(), probe_words.data(),
+                                                         probe_words.size() * sizeof(u32));
+                    VideoCommon::Nx2CmdProbe::Observe(probe_words.data(), entry.size,
+                                                      entry.addr.Value());
+                }
+            }
+            VideoCommon::Nx2CmdProbe::EndSubmission();
         }
     }
 

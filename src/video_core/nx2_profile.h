@@ -313,3 +313,129 @@ inline void Report(const char* thread_name = "GPU thread") {
 }
 
 } // namespace VideoCommon::Nx2Profile
+
+// EDEN_NX2_FAST_PROFILE=1: counters for the fast Maxwell3D method path, which
+// EDEN_NX2_GPU_PROFILE disables (maxwell_3d.cpp:61). One rdtsc pair and an increment per
+// method, reported every 10 s by the split's back thread. Unlike the zone profiler this
+// leaves the fast path on, so it measures what the game actually runs.
+namespace VideoCommon::Nx2FastProfile {
+
+inline const bool g_enabled = std::getenv("EDEN_NX2_FAST_PROFILE") != nullptr;
+
+inline bool Enabled() {
+    return g_enabled;
+}
+
+struct Data {
+    u64 method_ticks{};
+    u64 methods{};
+    u64 multi_ticks{};
+    u64 multis{};
+    u64 direct{};
+    u64 sunk{};
+    u64 executed{};
+    u64 draw_ticks{};
+    u64 draws{};
+    u64 window_start_ns{};
+    u64 window_start_ticks{};
+};
+
+inline thread_local Data t_data;
+
+inline void Method(u64 start_ticks) {
+    if (!g_enabled) {
+        return;
+    }
+    t_data.method_ticks += Nx2Profile::Ticks() - start_ticks;
+    ++t_data.methods;
+}
+
+inline void Multi(u64 start_ticks) {
+    if (!g_enabled) {
+        return;
+    }
+    t_data.multi_ticks += Nx2Profile::Ticks() - start_ticks;
+    ++t_data.multis;
+}
+
+inline void Direct() {
+    if (g_enabled) {
+        ++t_data.direct;
+    }
+}
+
+inline void Sunk() {
+    if (g_enabled) {
+        ++t_data.sunk;
+    }
+}
+
+inline void Executed() {
+    if (g_enabled) {
+        ++t_data.executed;
+    }
+}
+
+inline void Draw(u64 start_ticks) {
+    if (!g_enabled) {
+        return;
+    }
+    t_data.draw_ticks += Nx2Profile::Ticks() - start_ticks;
+    ++t_data.draws;
+}
+
+inline void Report(const char* thread_name) {
+    if (!g_enabled) {
+        return;
+    }
+    auto& data = t_data;
+    const u64 now_ns = Nx2Profile::Now();
+    const u64 now_ticks = Nx2Profile::Ticks();
+    if (data.window_start_ns == 0) {
+        data.window_start_ns = now_ns;
+        data.window_start_ticks = now_ticks;
+        return;
+    }
+    const u64 window_ns = now_ns - data.window_start_ns;
+    if (window_ns < 10'000'000'000ULL) {
+        return;
+    }
+    const u64 window_ticks = (std::max<u64>)(now_ticks - data.window_start_ticks, 1);
+    const double ns_per_tick = static_cast<double>(window_ns) / static_cast<double>(window_ticks);
+    const auto per_second = [window_ns](u64 count) {
+        return static_cast<double>(count) * 1e9 / static_cast<double>(window_ns);
+    };
+    const auto ms = [window_ticks](u64 ticks) {
+        return static_cast<double>(ticks) * 1000.0 / static_cast<double>(window_ticks);
+    };
+    const auto ns_each = [ns_per_tick](u64 ticks, u64 count) {
+        return count != 0 ? static_cast<double>(ticks) / static_cast<double>(count) * ns_per_tick
+                          : 0.0;
+    };
+    LOG_INFO(HW_GPU, "{} fast path per second: {:.0f} methods ({:.1f} ms, {:.1f} ns/method) | "
+                     "{:.0f} draws ({:.1f} ms, {:.1f} ns/draw) | "
+                     "{:.0f} multi ({:.1f} ms, {:.1f} ns/word) | {:.0f} direct, {:.0f} sunk, "
+                     "{:.0f} executed ({:.1f}% sunk)",
+             thread_name, per_second(data.methods), ms(data.method_ticks),
+             ns_each(data.method_ticks, data.methods), per_second(data.draws),
+             ms(data.draw_ticks), ns_each(data.draw_ticks, data.draws), per_second(data.multis),
+             ms(data.multi_ticks), ns_each(data.multi_ticks, data.multis), per_second(data.direct),
+             per_second(data.sunk), per_second(data.executed),
+             data.sunk + data.direct != 0
+                 ? 100.0 * static_cast<double>(data.sunk) /
+                       static_cast<double>(data.sunk + data.direct + data.executed)
+                 : 0.0);
+    data.method_ticks = 0;
+    data.methods = 0;
+    data.multi_ticks = 0;
+    data.multis = 0;
+    data.direct = 0;
+    data.sunk = 0;
+    data.executed = 0;
+    data.draw_ticks = 0;
+    data.draws = 0;
+    data.window_start_ns = now_ns;
+    data.window_start_ticks = now_ticks;
+}
+
+} // namespace VideoCommon::Nx2FastProfile
