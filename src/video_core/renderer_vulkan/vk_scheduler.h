@@ -44,6 +44,16 @@ class StateTracker;
 
 struct QueryCacheParams;
 
+// EDEN_NX2_PARALLEL_DRAW: records made on DrawWorker (geometry binds) go here instead of the
+// back's command chunk; the back replays them, in order, after the join.
+inline std::vector<std::function<void(vk::CommandBuffer, vk::CommandBuffer)>>&
+DeferredRecordStorage() {
+    static std::vector<std::function<void(vk::CommandBuffer, vk::CommandBuffer)>> records;
+    return records;
+}
+inline thread_local std::vector<std::function<void(vk::CommandBuffer, vk::CommandBuffer)>>*
+    t_deferred_record_target = nullptr;
+
 /// The scheduler abstracts command buffer and fence management with an interface that's able to do
 /// OpenGL-like operations on Vulkan command buffers.
 class Scheduler {
@@ -180,6 +190,14 @@ public:
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
     void RecordWithUploadBuffer(T&& command) {
+        if (t_deferred_record_target != nullptr) {
+            t_deferred_record_target->emplace_back(
+                [command = std::forward<T>(command)](vk::CommandBuffer cmdbuf,
+                                                     vk::CommandBuffer upload_cmdbuf) mutable {
+                    command(cmdbuf, upload_cmdbuf);
+                });
+            return;
+        }
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
             VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");
         }

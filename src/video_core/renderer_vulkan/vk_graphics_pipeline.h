@@ -79,6 +79,18 @@ class GraphicsPipeline {
     static constexpr size_t NUM_STAGES = Tegra::Engines::Maxwell3D::Regs::MaxShaderStage;
 
 public:
+    /// EDEN_NX2_PARALLEL_DRAW: one draw's buffer-cache half, resolved on DrawWorker.
+    struct BufferJob {
+        GraphicsPipeline* pipeline{};
+        bool is_indexed{};
+        std::array<size_t, NUM_STAGES> stage_counts{};
+        bool uploaded{};
+    };
+    using ConfigureBufferFunc = void (*)(GraphicsPipeline*, bool, BufferJob&);
+
+    /// DrawWorker entry: runs configure_buffer_func for the job.
+    static void RunBufferJob(void* argument);
+
     explicit GraphicsPipeline(
         Scheduler& scheduler, BufferCache& buffer_cache, TextureCache& texture_cache,
         vk::PipelineCache& pipeline_cache, VideoCore::ShaderNotify* shader_notify,
@@ -137,6 +149,18 @@ public:
         return configure_func(this, is_indexed);
     }
 
+    template <typename Spec>
+    static auto MakeConfigureBufferSpecFunc() {
+        return [](GraphicsPipeline* pl, bool is_indexed, BufferJob& job) {
+            pl->ConfigureBufferHalf<Spec>(is_indexed, job);
+        };
+    }
+
+    /// The buffer-cache half: SSBO resolution, buffer updates, geometry and stage buffer binds,
+    /// all captured for the back to append after the join.
+    template <typename Spec>
+    void ConfigureBufferHalf(bool is_indexed, BufferJob& job);
+
     [[nodiscard]] GraphicsPipeline* Next(const GraphicsPipelineCacheKey& current_key) noexcept {
         if (key == current_key) {
             return this;
@@ -183,6 +207,9 @@ private:
     template <typename Spec>
     bool ConfigureImpl(bool is_indexed);
 
+    template <typename Spec>
+    bool ConfigureParallelImpl(bool is_indexed);
+
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
                        const RenderAreaPushConstant& render_are);
 
@@ -202,6 +229,7 @@ private:
     DescriptorBufferRing& descriptor_buffer_ring;
 
     bool (*configure_func)(GraphicsPipeline*, bool){};
+    ConfigureBufferFunc configure_buffer_func{};
 
     std::vector<GraphicsPipelineCacheKey> transition_keys;
     std::vector<GraphicsPipeline*> transitions;

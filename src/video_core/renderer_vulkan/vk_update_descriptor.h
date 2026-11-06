@@ -35,6 +35,15 @@ union DescriptorUpdateEntry {
     DescriptorAddress address;
 };
 
+// EDEN_NX2_PARALLEL_DRAW: the buffer half of a draw resolves on a worker thread and records its
+// descriptor entries here instead of the real queue; the back appends them, in order, after the
+// join. The worker sets the target for its own thread; the back reads the completed storage.
+inline std::vector<DescriptorUpdateEntry>& CapturedStorage() {
+    static std::vector<DescriptorUpdateEntry> entries;
+    return entries;
+}
+inline thread_local std::vector<DescriptorUpdateEntry>* t_capture_target = nullptr;
+
 class UpdateDescriptorQueue final {
     // This should be plenty for the vast majority of cases. Most desktop platforms only
     // provide up to 3 swapchain images.
@@ -65,27 +74,42 @@ public:
     }
 
     void AddSampledImage(VkImageView image_view, VkSampler sampler) {
-        *(payload_cursor++) = VkDescriptorImageInfo{
+        const VkDescriptorImageInfo info{
             .sampler = sampler,
             .imageView = image_view,
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
         };
+        if (t_capture_target != nullptr) {
+            t_capture_target->push_back(info);
+            return;
+        }
+        *(payload_cursor++) = info;
     }
 
     void AddImage(VkImageView image_view) {
-        *(payload_cursor++) = VkDescriptorImageInfo{
+        const VkDescriptorImageInfo info{
             .sampler = VK_NULL_HANDLE,
             .imageView = image_view,
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
         };
+        if (t_capture_target != nullptr) {
+            t_capture_target->push_back(info);
+            return;
+        }
+        *(payload_cursor++) = info;
     }
 
     void AddBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) {
-        *(payload_cursor++) = VkDescriptorBufferInfo{
+        const VkDescriptorBufferInfo info{
             .buffer = buffer,
             .offset = offset,
             .range = size,
         };
+        if (t_capture_target != nullptr) {
+            t_capture_target->push_back(info);
+            return;
+        }
+        *(payload_cursor++) = info;
     }
 
     void AddBuffer(VkBuffer buffer, VkDeviceAddress base_address, VkDeviceSize offset,
@@ -94,14 +118,23 @@ public:
             AddBuffer(buffer, offset, size);
             return;
         }
-        *(payload_cursor++) = DescriptorAddress{
+        const DescriptorAddress info{
             .address = base_address == 0 ? 0 : base_address + offset,
             .range = base_address == 0 ? VK_WHOLE_SIZE : size,
             .format = VK_FORMAT_UNDEFINED,
         };
+        if (t_capture_target != nullptr) {
+            t_capture_target->push_back(info);
+            return;
+        }
+        *(payload_cursor++) = info;
     }
 
     void AddTexelBuffer(VkBufferView texel_buffer) {
+        if (t_capture_target != nullptr) {
+            t_capture_target->push_back(texel_buffer);
+            return;
+        }
         *(payload_cursor++) = texel_buffer;
     }
 
@@ -111,11 +144,35 @@ public:
             AddTexelBuffer(texel_buffer);
             return;
         }
-        *(payload_cursor++) = DescriptorAddress{
+        const DescriptorAddress info{
             .address = base_address == 0 ? 0 : base_address + offset,
             .range = base_address == 0 ? VK_WHOLE_SIZE : size,
             .format = format,
         };
+        if (t_capture_target != nullptr) {
+            t_capture_target->push_back(info);
+            return;
+        }
+        *(payload_cursor++) = info;
+    }
+
+    /// Appends a descriptor entry the buffer half resolved earlier (see t_captured_entries).
+    void AddEntry(const DescriptorUpdateEntry& entry) {
+        *(payload_cursor++) = entry;
+    }
+
+    static void BeginCapture() {
+        auto& storage = CapturedStorage();
+        storage.clear();
+        t_capture_target = &storage;
+    }
+
+    static void EndCapture() {
+        t_capture_target = nullptr;
+    }
+
+    static std::vector<DescriptorUpdateEntry>& CapturedEntries() {
+        return CapturedStorage();
     }
 
 private:

@@ -314,25 +314,58 @@ Slow-path sub-zones, which match the per-draw cost, ranked:
 | `pipeline lookup` | 4 % |
 | draw record + rest | 17 % |
 
-## Revised direction
+## Parallel draw resolver v1 (implemented, measured, not a win)
 
-1. **Split draw setup by cache domain and run the halves on two threads.** The
-   draw's cost is roughly 49 % buffer-cache work (`update buffers`,
-   `bind stage buffers`), 17 % texture-cache work (`read handles`,
-   `fill image views`), and the rest pipeline/layout/dynamic state. The two
-   caches are independent and the back currently holds both mutexes for the
-   whole draw. Run the buffer half on a worker under `buffer_cache.mutex` while
-   the back does the texture half and pipeline work, then join and encode
-   descriptors. A 2-stage pipeline should cut draw setup from ~4.9 µs to
-   ~2.6-2.9 µs, which is ~180 ms/s of the back and roughly +25 % fps.
-2. **Then widen it.** If the join and the descriptor encoding dominate, add a
-   second buffer worker or move the descriptor encode to the VulkanWorker.
-3. **Keep the cross-frame state cache as a smaller follow-up.** A ~40 % hit
-   rate on pipeline/handle/view resolution is worth a few percent, but it
-   cannot skip the constant buffer streaming that dominates.
+`EDEN_NX2_PARALLEL_DRAW=1` splits `GraphicsPipeline::ConfigureImpl` by cache
+domain: a persistent `DrawWorker` resolves the buffer half (SSBO resolution,
+buffer updates, geometry and stage buffer binds) while the back resolves the
+texture half. Buffer descriptor entries are captured into a shared buffer and
+scheduler writes (uploads, geometry binds) are deferred; the back appends and
+replays both after the join. It renders correctly.
 
-The copy/compute worker described above stays a separate, smaller win (and the
-right architecture for compute-heavy titles); it is not the OoT wall.
+| Variant | FPS (Low+split, no profiler) |
+|---|---|
+| serial baseline | 58.4 |
+| parallel, mutex/condvar handoff | 13.8 |
+| parallel, spin handoff | 46.9 |
+| parallel, spin + fast profile | 44.2 |
+
+The spin handoff removed most of the 4x regression, but the split is still
+slower. Fast-path timing per draw:
+
+- back waits for the worker: **2.8 µs** (213 ms/s of the back)
+- worker's buffer half: **~5.8 µs**
+- back's own half: **~3 µs**
+- serial draw: 5.8 µs
+
+The two halves do not overlap: the worker is the long pole and runs cold
+(its cache structures compete with the back's texture work), so the critical
+path is the worker plus the handoff, not the maximum of the two. The per-draw
+handoff is too fine-grained for this work.
+
+Also checked: `VK_EXT_external_memory_host` is **not supported** by the device
+(`vulkan_device.cpp:1190`), so mapping guest memory directly into Vulkan
+buffers (zero-copy uniforms) is not available here.
+
+### What this means
+
+The draw cost is genuine per-object data-plane work, and a fine-grained split
+cannot hide it. The remaining parallel option is **coarse batching**: resolve a
+run of draws (8-16) per handoff, not one. That needs a genuine deferred draw
+queue in the rasterizer, with the ordering constraints made explicit:
+
+- only batch draws to the same render target with the same pipeline and no
+  storage-buffer writes, so the two cache domains cannot depend on each other
+  inside the batch;
+- keep the descriptor queue per draw (`Acquire`/append/`ConfigureDraw` in order)
+  after the batch resolves;
+- flush the batch at any state boundary the existing draw deferral already
+  honours (clear, dispatch, render-target change, fence, frame end).
+
+That is the next real milestone. The cheap alternatives are exhausted:
+command replay (0 % whole-frame repeat), identical-draw batching (0.1 %),
+copy-engine worker (noise), fine-grained draw split (measured slower).
+
 
 
 
