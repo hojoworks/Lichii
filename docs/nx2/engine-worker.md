@@ -265,9 +265,41 @@ Fast path (draw time included in the method timer):
 | non-draw method writes | ~211 ms/s |
 | direct (macro) / sunk / executed | 80 % / 10 % / 3 % of methods |
 
-**The wall is per-draw setup, not command replay, not method dispatch, not the
-copy engine.** At ~1,700-2,100 draws per frame and ~4.9 µs each, draws are
-about 45 % of the back thread and 65 % of the method stream.
+The wall is per-draw setup: about 45 % of the back thread and 65 % of the method
+stream. The register-write stream is a secondary target and the copy engine is
+noise.
+
+### Draw-state probe (corrected)
+
+`EDEN_NX2_DRAW_PROBE=1` hashes pipeline, draw parameters, render target,
+buffers, viewport/scissor and texture handles — and the per-draw constant
+buffer bindings, which turned out to be decisive:
+
+| Measure | Value |
+|---|---|
+| new state | 59-81 % (scene dependent) |
+| repeat from a previous frame | **18-41 %** |
+| repeat inside the same frame | 0.4 % |
+| consecutive identical state | **0.1 %** |
+| consecutive same pipeline | **72.4 %** |
+
+Without the constant buffer bindings the probe reported 27 % consecutive
+identical draws; with them it is 0.1 %. So the apparent batching jackpot was an
+artifact: every draw binds different per-object constant buffers even when the
+pipeline is the same. **Multi-draw batching of identical draws and a same-frame
+draw cache are dead.**
+
+What the numbers actually say:
+
+- The pipeline is stable across 72 % of consecutive draws, but the per-object
+  constant buffers, vertex ranges and textures change every draw.
+- ~40 % of full draw states (bindings included) return in a later frame, but the
+  data behind those bindings is rewritten.
+- The per-draw cost is therefore genuine per-object work — streaming and binding
+  constants — not redundant state.
+
+That leaves one big lever: **execute the per-draw work on more than one thread**.
+
 
 Slow-path sub-zones, which match the per-draw cost, ranked:
 
@@ -284,20 +316,24 @@ Slow-path sub-zones, which match the per-draw cost, ranked:
 
 ## Revised direction
 
-1. **Draw-state memoization.** Hash the draw-relevant state (pipeline key,
-   render targets, viewport/scissor, enabled buffer bindings and sizes, draw
-   arguments) at `RasterizerVulkan::Draw` and see how often the same state
-   recurs across frames. Unlike command-list content, the state may repeat far
-   more often because the guest rewrites command buffers around the same state.
-2. **Multi-draw batching.** Consecutive draws that share pipeline and
-   descriptors differ only in vertex/index ranges. `VK_EXT_multi_draw`
-   (`vkCmdDrawMultiIndexedEXT`) can collapse their setup into one bind plus one
-   call. The same-frame 41 % repeat rate is direct evidence for batching.
-3. **Then parallel draw preparation** only if the state hash shows enough
-   independent work to fill a worker pool.
+1. **Split draw setup by cache domain and run the halves on two threads.** The
+   draw's cost is roughly 49 % buffer-cache work (`update buffers`,
+   `bind stage buffers`), 17 % texture-cache work (`read handles`,
+   `fill image views`), and the rest pipeline/layout/dynamic state. The two
+   caches are independent and the back currently holds both mutexes for the
+   whole draw. Run the buffer half on a worker under `buffer_cache.mutex` while
+   the back does the texture half and pipeline work, then join and encode
+   descriptors. A 2-stage pipeline should cut draw setup from ~4.9 µs to
+   ~2.6-2.9 µs, which is ~180 ms/s of the back and roughly +25 % fps.
+2. **Then widen it.** If the join and the descriptor encoding dominate, add a
+   second buffer worker or move the descriptor encode to the VulkanWorker.
+3. **Keep the cross-frame state cache as a smaller follow-up.** A ~40 % hit
+   rate on pipeline/handle/view resolution is worth a few percent, but it
+   cannot skip the constant buffer streaming that dominates.
 
-The copy/compute worker described above stays a smaller, separate win (and the
+The copy/compute worker described above stays a separate, smaller win (and the
 right architecture for compute-heavy titles); it is not the OoT wall.
+
 
 
 ## Risks

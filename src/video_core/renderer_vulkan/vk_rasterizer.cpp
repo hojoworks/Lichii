@@ -63,6 +63,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_debug_control.h"
+#include "video_core/nx2_draw_probe.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -431,6 +432,83 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         report_failure("no pipeline");
         TraceRenderState(is_indexed, "no-pipeline", nullptr);
         return;
+    }
+    if (VideoCommon::Nx2DrawProbe::Enabled()) {
+        // Hash the state a draw cache would key on: pipeline, geometry, render target, buffers,
+        // viewport/scissor and the texture handle tables the pipeline will read.
+        const auto& regs = maxwell3d->regs;
+        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        std::array<u64, 1024> fields{};
+        size_t n = 0;
+        fields[n++] = reinterpret_cast<u64>(pipeline);
+        fields[n++] = is_indexed ? 1 : 0;
+        fields[n++] = draw_state.vertex_buffer.first;
+        fields[n++] = draw_state.vertex_buffer.count;
+        fields[n++] = draw_state.index_buffer.first;
+        fields[n++] = draw_state.index_buffer.count;
+        fields[n++] = draw_state.base_index;
+        fields[n++] = draw_state.base_instance;
+        fields[n++] = draw_state.instance_count;
+        fields[n++] = draw_state.draw_element_count;
+        fields[n++] = draw_state.draw_indexed ? 1 : 0;
+        fields[n++] = static_cast<u32>(draw_state.draw_mode);
+        fields[n++] = static_cast<u32>(draw_state.topology);
+        fields[n++] = regs.rt[0].Address();
+        fields[n++] = regs.rt[0].width;
+        fields[n++] = regs.rt[0].height;
+        fields[n++] = static_cast<u32>(regs.rt[0].format);
+        fields[n++] = regs.rt_control.count;
+        for (u32 i = 0; i < 8; ++i) {
+            fields[n++] = regs.rt_control.Map(i);
+        }
+        fields[n++] = regs.const_buffer.Address();
+        fields[n++] = regs.const_buffer.offset;
+        fields[n++] = regs.const_buffer.size;
+        for (u32 i = 0; i < 8; ++i) {
+            fields[n++] = regs.vertex_streams[i].Address();
+            fields[n++] = regs.vertex_streams[i].enable;
+            fields[n++] = regs.vertex_streams[i].stride;
+            fields[n++] = regs.vertex_stream_limits[i].Address();
+        }
+        for (u32 i = 0; i < 8; ++i) {
+            fields[n++] = regs.bind_groups[i].raw_config;
+        }
+        // The per-draw constant buffer bindings are the main thing that changes between draws
+        // that share a pipeline.
+        for (u32 stage = 0; stage < 5; ++stage) {
+            for (u32 i = 0; i < 16; ++i) {
+                const auto& cb = maxwell3d->state.shader_stages[stage].const_buffers[i];
+                fields[n++] = cb.enabled ? 1 : 0;
+                fields[n++] = cb.enabled ? cb.address : 0;
+                fields[n++] = cb.enabled ? cb.size : 0;
+            }
+        }
+        fields[n++] = regs.viewports[0].x;
+        fields[n++] = regs.viewports[0].width;
+        fields[n++] = regs.viewports[0].y;
+        fields[n++] = regs.viewports[0].height;
+        fields[n++] = regs.scissor_test[0].min_x;
+        fields[n++] = regs.scissor_test[0].max_x;
+        fields[n++] = regs.scissor_test[0].min_y;
+        fields[n++] = regs.scissor_test[0].max_y;
+        for (u32 stage = 0; stage < 5; ++stage) {
+            const auto& handles = maxwell3d->state.shader_stages[stage].const_buffers[2];
+            if (handles.enabled && handles.size >= 4) {
+                const u32 count = (std::min<u32>)(handles.size / 4, 16);
+                std::array<u32, 16> words{};
+                gpu_memory->ReadBlockUnsafe(handles.address, words.data(),
+                                            count * sizeof(u32));
+                for (u32 i = 0; i < count; ++i) {
+                    fields[n++] = words[i];
+                }
+                fields[n++] = count;
+            } else {
+                fields[n++] = 0;
+            }
+        }
+        VideoCommon::Nx2DrawProbe::Observe(
+            VideoCommon::Nx2DrawProbe::HashFields(fields.data(), n),
+            reinterpret_cast<u64>(pipeline));
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
