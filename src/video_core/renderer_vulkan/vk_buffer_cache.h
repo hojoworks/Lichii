@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/vk_multi_range_buffer.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/nx2_draw_params.h"
 #include "video_core/surface.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -212,6 +213,13 @@ public:
     /// live: made on the scheduler tick that is current now, so the staging pool has not recycled
     /// it and the GPU has not even started on it.
     void RebindStreamUniform(const StreamUniformRef& ref, u32 size) {
+        constexpr u32 MaxUboRange = 65536;
+        if (VideoCommon::Nx2DrawParams::Enabled() && ref.offset + size <= MaxUboRange) {
+            // One descriptor for the whole window; the shader's DrawParams base selects this
+            // draw's slice. A UBO descriptor's range cannot exceed maxUniformBufferRange.
+            guest_descriptor_queue.AddBuffer(ref.buffer, ref.device_address, 0, MaxUboRange);
+            return;
+        }
         guest_descriptor_queue.AddBuffer(ref.buffer, ref.device_address, ref.offset, size);
     }
 

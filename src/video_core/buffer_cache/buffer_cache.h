@@ -24,8 +24,8 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
-#include "video_core/nx2_cmdpage_diag.h"
-#include "video_core/nx2_perf.h"
+#include "video_core/nx2_cmdpage_diag.h"#include "video_core/nx2_perf.h"
+#include "video_core/nx2_draw_params.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
 
@@ -1405,8 +1405,8 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
             // The same bytes as this slot's previous bind, in the same command buffer: bind that
             // stream allocation again instead of allocating and copying (uniform_stream_reuse.h).
-            // EDEN_NX2_UBOREUSE=0 turns it off.
-            if (VideoCommon::UniformStreamReuseEnabled()) {
+            // EDEN_NX2_UBOREUSE=0 turns it off. GPU draws need a fresh slice per draw instead.
+            if (!VideoCommon::Nx2DrawParams::Enabled() && VideoCommon::UniformStreamReuseEnabled()) {
                 streamed = VideoCommon::BindSmallUniformReusing(
                     runtime, device_memory, stage, index, binding_index, device_addr, size);
             }
@@ -1414,6 +1414,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         if (!streamed) {
             const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
             device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
+            if constexpr (!IS_OPENGL) {
+                if (VideoCommon::Nx2DrawParams::Enabled()) {
+                    const auto ref = runtime.LastStreamUniformRef();
+                    VideoCommon::Nx2DrawParams::cb_bases[index] =
+                        ref.offset + size <= 65536 ? ref.offset : 0;
+                }
+            }
         }
         return;
     }
@@ -1439,6 +1446,9 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
     }
     buffer.MarkUsage(offset, size);
+    if (VideoCommon::Nx2DrawParams::Enabled()) {
+        VideoCommon::Nx2DrawParams::cb_bases[index] = 0;
+    }
     if constexpr (NEEDS_BIND_UNIFORM_INDEX) {
         runtime.BindUniformBuffer(stage, binding_index, buffer, offset, size);
     } else {

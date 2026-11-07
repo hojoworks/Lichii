@@ -138,6 +138,27 @@ at one ring for the whole batch (the DrawID base selects the slice), so
 `BindMappedUniformBuffer` / `BindHostGraphicsUniformBuffer` need a ring mode
 before `vkCmdDrawMultiIndexedEXT` can be issued.
 
+### Ring mode (done)
+
+`EDEN_NX2_GPU_DRAWS=1` now also:
+
+- skips the stream-uniform reuse and gives each draw its own stream slice;
+- records each constant buffer's slice byte offset in
+  `Nx2DrawParams::cb_bases` (thread-local, reset per draw);
+- binds the UBO descriptor as a 64 KiB window from offset 0 (`maxUniformBufferRange`)
+  and lets the shader's DrawID base select the slice; slices past the window keep
+  the old per-slice descriptor and base 0;
+- copies the table into the pipeline's DrawParams buffer for draw 0.
+
+The DrawID is compiled only for pipelines whose stages are exactly vertex +
+fragment (`compile_gpu_draws` set around `emit_stages`), so mesh/geometry/
+tessellation pipelines keep the serial interface. Slice offsets are nonzero in
+normal play and the OoT scene renders identically at ~61 fps.
+
+Remaining: the batch accumulator and `vkCmdDrawMultiIndexedEXT`, with a flush at
+every pipeline/target/viewport/texture/storage boundary. Then A/B measure.
+
+
 
 ## Implementation map (next commits)
 

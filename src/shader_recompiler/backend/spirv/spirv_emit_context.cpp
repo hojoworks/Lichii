@@ -19,6 +19,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "video_core/nx2_draw_params.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -479,7 +480,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
       stage{program.stage}, texture_rescaling_index{bindings.texture_scaling_index},
       image_rescaling_index{bindings.image_scaling_index} {
     gpu_draws = (stage == Stage::VertexB || stage == Stage::Fragment) &&
-                std::getenv("EDEN_NX2_GPU_DRAWS") != nullptr;
+                VideoCommon::Nx2DrawParams::compile_gpu_draws;
     const bool is_unified{profile.unified_descriptor_binding};
     u32& uniform_binding{is_unified ? bindings.unified : bindings.uniform_buffer};
     u32& storage_binding{is_unified ? bindings.unified : bindings.storage_buffer};

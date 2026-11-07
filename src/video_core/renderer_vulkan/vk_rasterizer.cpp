@@ -64,6 +64,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_draw_probe.h"
+#include "video_core/nx2_draw_params.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -570,6 +571,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                 flags[VideoCommon::Dirty::VertexBuffer0 + binding] = true;
             }
         }
+    }
+    if (VideoCommon::Nx2DrawParams::Enabled()) {
+        VideoCommon::Nx2DrawParams::Reset();
     }
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");

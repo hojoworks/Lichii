@@ -37,6 +37,7 @@
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_draw_params.h"
 
 #if defined(__clang__) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE __attribute__((always_inline))
@@ -353,11 +354,15 @@ GraphicsPipeline::GraphicsPipeline(
         }
     }
 
+    const bool gpu_draws_pipeline =
+        std::getenv("EDEN_NX2_GPU_DRAWS") != nullptr && infos[0] != nullptr &&
+        infos[4] != nullptr && infos[1] == nullptr && infos[2] == nullptr && infos[3] == nullptr;
+
     const VkDescriptorSetLayout set_layout{*descriptor_set_layout};
     draw_params_set_layout = builder.CreateDrawParamsSetLayout();
     pipeline_layout = builder.CreatePipelineLayout(set_layout, *draw_params_set_layout);
 
-    if (std::getenv("EDEN_NX2_GPU_DRAWS") != nullptr) {
+    if (gpu_draws_pipeline) {
         // Host-visible table of per-draw constant base offsets, indexed by gl_DrawID.
         constexpr u32 MaxDraws = 64;
         constexpr u32 DrawParamsBytes = u32{Shader::Info::MAX_CBUFS} * MaxDraws * sizeof(u32);
@@ -429,7 +434,7 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics,
-                emit_stages = std::move(emit_stages)] {
+                gpu_draws_pipeline, emit_stages = std::move(emit_stages)] {
         const auto begin = std::chrono::steady_clock::now();
         SCOPE_EXIT {
             if (shader_notify) {
@@ -438,6 +443,10 @@ GraphicsPipeline::GraphicsPipeline(
         };
         try {
             if (emit_stages) {
+                VideoCommon::Nx2DrawParams::compile_gpu_draws = gpu_draws_pipeline;
+                SCOPE_EXIT {
+                    VideoCommon::Nx2DrawParams::compile_gpu_draws = false;
+                };
                 spv_modules = emit_stages();
             }
             const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
@@ -1042,6 +1051,11 @@ bool GraphicsPipeline::ConfigureParallelImpl(bool is_indexed) {
 
 bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                                      const RenderAreaPushConstant& render_area) {
+    if (draw_params_mapped != nullptr) {
+        auto* const bases = static_cast<u32*>(draw_params_mapped);
+        std::memcpy(bases, VideoCommon::Nx2DrawParams::cb_bases.data(),
+                    VideoCommon::Nx2DrawParams::MaxCbufs * sizeof(u32));
+    }
     if (guest_descriptor_queue.UpdateCount() != num_descriptor_entries) {
         LOG_CRITICAL(Render_Vulkan, "Graphics descriptor count mismatch: expected {}, got {}",
                      num_descriptor_entries, guest_descriptor_queue.UpdateCount());
